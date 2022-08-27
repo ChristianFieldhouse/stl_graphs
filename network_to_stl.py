@@ -15,7 +15,6 @@ def triangle_ascii(triangle):
     )
 
 def vertex_ring(p, n, r, k=10, v3=(0, 0, 1)):
-    print(n, v3)
     b1 = np.cross(v3, n)
     b1 = b1 / np.sqrt(np.sum(b1**2))
     b2 = np.cross(b1, n)
@@ -178,11 +177,18 @@ class Network():
         j10_idx = np.argmax([np.dot(a[0], j0.center - j1.center) for a in j1.arrows()])
         j10_dir, j10_start = j1.arrows()[j10_idx]
         
-        path = np.linspace(j01_start, j10_start, 10)
+        path = np.linspace(j01_start, j10_start, 2)
         return tube(path, n0=j01_dir, n1=-j10_dir)
 
     def save(self, name="unnamed_network"):
         save_sdl(self.all_triangles(), name)
+
+def hack(point):
+    r = 50
+    angle = point[0] / r
+    return np.array((
+        r * np.cos(angle), r * np.sin(angle), point[1]
+    ))
 
 if __name__ == "__main__":
     #save_sdl(tube(circle_path(5, 10), k=20))
@@ -190,7 +196,7 @@ if __name__ == "__main__":
     y_step = np.array((0, 1, 0)) * 10
     cross_step = (y_step + x_step)/2
     points = [
-        x*x_step + (y//2) * y_step + cross_step*((y + 1)//2)
-        for x, y in itertools.product(range(5), range(5))
+        hack((x - y//4)*x_step + (y//2) * y_step + cross_step*((y + 1)//2))
+        for x, y in itertools.product(range(18), range(20))
     ]
     save_sdl(Network(points).all_triangles(), name="junction")
