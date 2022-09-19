@@ -6,7 +6,7 @@ from tqdm import tqdm
 from network_to_stl import Network
 
 w = 500
-num_blobs = 51
+num_blobs = 8
 num_blobx = np.sqrt(num_blobs)
 
 blobs = np.dstack([

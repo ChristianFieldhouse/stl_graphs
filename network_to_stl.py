@@ -37,9 +37,13 @@ def tube(path, n0=None, n1=None, up0=None, up1=None, closed=False, r=1, k=10):
     if n1 is not None:
         normals[-1] = n1
     
-    x, y = (1, 0, 0), (0, 1, 0)
+    x, y, z = (1, 0, 0), (0, 1, 0), (0, 0, 1)
     ups = [
-        np.cross(n, x) if not np.all(n==x) else np.cross(n, y)
+        np.cross(n, x) if not np.all(np.cross(n, x)==0) else (
+            np.cross(n, y) if not np.all(np.cross(n, y)==0) else (
+                np.cross(n, z)
+            )
+        )
         for n in normals
     ]
     
@@ -52,13 +56,16 @@ def tube(path, n0=None, n1=None, up0=None, up1=None, closed=False, r=1, k=10):
         vertex_ring(p, n, r, k, v3=up)
         for p, n, up in zip(path, normals, ups)
     ]
+    #print(f"{normals=}")
+    #print(f"{ups=}")
+    #print(f"{vertex_rings=}")
     
     triangles = []
 
     vertex_rings = vertex_rings + [vertex_rings[0] if closed else vertex_rings[-1]]
     for i in range(len(path)):
         r1, r2 = vertex_rings[i], vertex_rings[i+1]
-        rotate = np.argmin(np.sum((r2 - r1[0])**2, axis=1))
+        rotate = np.argmin([np.sum((np.roll(r2, -rotate, axis=0) - r1)**2) for rotate in range(len(r2))])
         r2 = np.roll(r2, -rotate, axis=0)
         r1, r2 = r1 + [r1[0]], list(r2) + [r2[0]]
         for j in range(k):
@@ -92,7 +99,7 @@ def circle_path(r, k):
         for theta in np.arange(0, 2*np.pi, 2*np.pi/k)
     ]
 
-def save_sdl(triangles, name="new"):
+def save_stl(triangles, name="new"):
     with open(name + ".stl", "w") as f:
         f.write("solid " + name + "\n")
         for triangle in triangles:
@@ -103,6 +110,7 @@ class Junction():
     def __init__(self, center, neighbours=None, radius=1, k=10):
         self.center = center
         self.neighbours = neighbours if neighbours is not None else []
+        self.paths_to_neighbours = [None for _ in self.neighbours]
         self.radius = radius
         self.k = k
     
@@ -111,6 +119,13 @@ class Junction():
         vx = self.neighbours[0] - self.center
         vx = vx / np.sqrt(np.sum(vx**2))
         vz = np.cross(vx, self.neighbours[1] - self.center)
+        if len(self.neighbours) > 2:
+            vx = self.neighbours[0] - np.mean(self.neighbours[1:], axis=0)
+            vx = vx / np.sqrt(np.sum(vx**2))
+            vz = np.cross(self.neighbours[1] - self.neighbours[0], self.neighbours[2] - self.neighbours[0])
+            average_neighbour = np.mean(self.neighbours)
+            if np.dot(average_neighbour - self.center, vz) < 0:
+                vz = -vz
         vz = vz / np.sqrt(np.sum(vz**2))
         vy = np.cross(vx, vz)
         vy = vy / np.sqrt(np.sum(vy**2))
@@ -136,6 +151,18 @@ class Junction():
             (direction, self.center + n_gon_centers_radius * direction)
             for direction in directions
         ]
+
+    def add_neighbour(self, center, path=None):
+        # todo: tod-ew
+        assert len(self.neighbours) == len(self.paths_to_neighbours)
+        self.neighbours.append(center)
+        self.paths_to_neighbours.append(path)
+
+    def get_path_to(self, possible_neighbour):
+        matches = [np.all(possible_neighbour==n) for n in self.neighbours]
+        if matches.index(True) != -1:
+            return self.paths_to_neighbours[matches.index(True)]
+        return False    
     
     def triangles(self):
         num_neighbours = len(self.neighbours)
@@ -174,15 +201,17 @@ class Junction():
       
 
 class Network():
-    def __init__(self, nodes=None):
+    def __init__(self, nodes=None, r=1):
         self.junctions = []
         self.tubes = []
+        self.r = r
         if nodes is not None:
             self.add_nodes(nodes)
     
     def all_triangles(self):
         triangles = []
         for junction in self.junctions:
+            junction.radius = self.r # todo: manage this r better!
             triangles += junction.triangles()
             for neighbour in junction.neighbours:
                 neighbour_j = self.get_junction_at(neighbour)
@@ -198,25 +227,45 @@ class Network():
             return None
         assert len(matches) == 1, len(matches)
         return matches[0]
+
+    def get_junction_closest_to(self, center):
+        return sorted(self.junctions, key=lambda x: np.sum((center-x.center)**2))[0]
     
     def add_junction_at(self, center):
-        self.junctions.append(Junction(center))
+        self.junctions.append(Junction(center, radius=self.r))
 
-    def join_junctions_at(self, center0, center1, symmetric=True):
+    def join_junctions_at(self, center0, center1, symmetric=True, path=None):
         junc0, junc1 = self.get_junction_at(center0), self.get_junction_at(center1)
-        junc0.neighbours.append(center1)
+        junc0.add_neighbour(center1, path=path)
         if symmetric:
-            junc1.neighbours.append(center0)
-    
-    def add_nodes(self, nodes):
-        nodes = np.array(nodes)
-        for i, node in enumerate(nodes):
-            self.add_junction_at(node)
-        
-        for i, node in enumerate(nodes):
-            closest = sorted(nodes, key=lambda x: np.sum((x - node)**2))
-            junc = self.get_junction_at(node)
-            junc.neighbours = closest[1:4]
+            junc1.add_neighbour(center0, path=(path[::-1] if path is not None else None))
+
+    def join_junctions_closest_to(self, center0, center1, symmetric=True, path=None):
+        j0 = self.get_junction_closest_to(
+            center0
+        )
+        j1c = self.get_junction_closest_to(
+            center1
+        ).center
+        j0.add_neighbour(j1c, path=path)
+
+    def make_neighbours_symmetric(self):
+        for j in self.junctions:
+            for n in j.neighbours:
+                nj = self.get_junction_closest_to(n)
+                assert np.all(nj.center == n)
+                if all(np.any(j.center!=c) for c in nj.neighbours):
+                    nj.add_neighbour(j.center, path=None)
+
+    #def add_nodes(self, nodes):
+    #    nodes = np.array(nodes)
+    #    for i, node in enumerate(nodes):
+    #        self.add_junction_at(node)
+    #    
+    #    for i, node in enumerate(nodes):
+    #        closest = sorted(nodes, key=lambda x: np.sum((x - node)**2))
+    #        junc = self.get_junction_at(node)
+    #        junc.neighbours = closest[1:4]
 
     def jj_tube(self, j0, j1):
         j01_idx = np.argmax([np.dot(a[0], j1.center - j0.center) for a in j0.arrows()])
@@ -228,17 +277,21 @@ class Network():
         _, _, up1 = j1.v()
         
         path = np.linspace(j01_start, j10_start, 5)
-        return tube(path, n0=j01_dir, n1=-j10_dir, up0=up0, up1=up1)
+        if j0.get_path_to(j1.center) is not None:
+            path = j0.get_path_to(j1.center)
+        if j1.get_path_to(j0.center) is not None:
+            path = j1.get_path_to(j0.center)[::-1]
+        return tube(path, n0=j01_dir, n1=-j10_dir, up0=up0, up1=up1, r=self.r)
 
     def jj_cap(self, j, direction):
         
         j_idx = np.argmax([np.dot(a[0], direction - j.center) for a in j.arrows()])
         j_dir, j_start = j.arrows()[j_idx]
         _, _, up = j.v()
-        return hemisphere(j_start, n=j_dir, up=up, squish=0.2)
+        return hemisphere(j_start, n=j_dir, up=up, squish=0.2, r=self.r)
 
     def save(self, name="unnamed_network"):
-        save_sdl(self.all_triangles(), name)
+        save_stl(self.all_triangles(), name)
 
 def hack(point):
     r = 50
@@ -256,4 +309,5 @@ if __name__ == "__main__":
         hack((x - y//4)*x_step + (y//2) * y_step + cross_step*((y + 1)//2))
         for x, y in itertools.product(range(18), range(20))
     ]
-    save_sdl(Network(points).all_triangles(), name="out/stls/junction")
+    save_stl(Network(points).all_triangles(), name="out/stls/junction")
+
